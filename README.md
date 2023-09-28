@@ -1,6 +1,6 @@
 # ALPaCA development/analysis code
 
-All code used to develop ALPaCA and analyze outputs.
+All code used to develop ALPaCA and analyze outputs. Data and models are not included due to privacy and GitHub size limitations, respectively.
 
 code/to_copy/ folder
 1. Used to copy raw files from different directory.
