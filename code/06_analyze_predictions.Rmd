@@ -1,0 +1,265 @@
+---
+title: "03_analyze_predictions"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(pROC)
+library(PRROC)
+library(caret)
+library(here)
+source(here("code/00_assessment_helper_functions.R"))
+```
+
+# Loading files
+```{r}
+cv_ids <- read.csv(here("cv_output/cv_df.csv")) %>% 
+  mutate(cv_index = cv_index + 1)
+cv_preds <- lapply(1:10, function(i) {
+  concatenate_pred_csvs(here("cv_output/"), i, cv_ids)
+})
+competitor_preds <- lapply(list.files(here("cv_output/competitors"),
+             full.names = TRUE), read.csv) %>% 
+  do.call(rbind, .)
+
+train_preds <- lapply(cv_preds, function(cv) cv$train)
+test_preds <- lapply(cv_preds, function(cv) cv$test)
+
+total_lesions_are_equal <- sapply(1:length(train_preds), function(i) {
+  check_total_lesion_number(train_preds[[i]],
+                            test_preds[[i]], 
+                            competitor_preds)
+})
+
+if (!all(total_lesions_are_equal)) {
+  stop("Total lesion numbers are not equivalent for at least one CV split")
+}
+
+train_preds <- lapply(train_preds, function(preds) {
+  preprocess_preds(preds, competitor_preds)
+})
+test_preds <- lapply(test_preds, function(preds) {
+  preprocess_preds(preds, competitor_preds)
+})
+# 
+# train_preds <- lapply(train_preds, function(preds) {
+#   filter(preds, mimosa_pred > 0.3)
+# })
+# test_preds <- lapply(test_preds, function(preds) {
+#   filter(preds, mimosa_pred > 0.3)
+# })
+```
+
+# Get ROCs from raw predictions
+```{r}
+train_roc_list <- lapply(train_preds, get_train_roc)
+
+train_roc_acc <- sapply(train_roc_list, extract_roc_acc, 
+                        simplify = T) %>% t() %>% as.data.frame() %>% 
+  pivot_longer(cols = everything(), values_to = "train")
+
+test_roc_list <- mlapply(get_test_roc, test_preds, train_roc_list)
+
+test_roc_acc <- sapply(test_roc_list, extract_roc_acc, 
+                       simplify = T) %>% t() %>% as.data.frame() %>% 
+  pivot_longer(cols = everything(), values_to = "test")
+
+roc_acc_df <- cbind(train_roc_acc, 
+                    test_roc_acc, 
+                    cv_id = rep(1:length(train_preds), 
+                                each = 15))[, -1] %>% 
+  rename(metric = name) %>% 
+  pivot_longer(cols = c("train", "test"))
+```
+
+<!-- # Correct predictions where lesion prediction and PRL/CVS prediction differ -->
+<!-- ```{r} -->
+<!-- mapply(get_disparate_preds, train_preds, train_roc_list) %>% signif(digits = 3) -->
+
+<!-- train_preds_corr <- mlapply(change_disparate_preds, -->
+<!--                             train_preds, train_roc_list) -->
+<!-- test_preds_corr <- mlapply(change_disparate_preds, -->
+<!--                            test_preds, train_roc_list) -->
+
+<!-- train_roc_list_corr <- lapply(train_preds_corr, get_train_roc) -->
+
+<!-- train_roc_acc_corr <- sapply(train_roc_list_corr, extract_roc_acc, -->
+<!--                              simplify = T) %>% t() %>% as.data.frame() %>% -->
+<!--   pivot_longer(cols = everything(), values_to = "train") -->
+
+<!-- test_roc_list_corr <- mlapply(get_test_roc, test_preds_corr, train_roc_list_corr) -->
+
+<!-- test_roc_acc_corr <- sapply(test_roc_list_corr, extract_roc_acc, -->
+<!--                             simplify = T) %>% t() %>% as.data.frame() %>% -->
+<!--   pivot_longer(cols = everything(), values_to = "test") -->
+
+<!-- roc_acc_df_corr <- cbind(train_roc_acc_corr, -->
+<!--                          test_roc_acc_corr, -->
+<!--                          cv_id = rep(1:length(train_preds_corr), -->
+<!--                                      each = 15))[, -1] %>% -->
+<!--   rename(metric = name) %>% -->
+<!--   pivot_longer(cols = c("train", "test")) -->
+<!-- ``` -->
+
+# DeLong's test on test ROCs vs competitor ROCs
+```{r}
+test_all <- do.call(rbind, test_preds)
+test_all_roc <- get_train_roc(test_all)
+
+train_all <- do.call(rbind, train_preds)
+train_all_roc <- get_train_roc(train_all)
+
+with(test_all_roc, roc.test(les_roc, mimosa_roc))
+with(test_all_roc, roc.test(prl_roc, aprl_roc))
+with(test_all_roc, roc.test(cvs_roc, acvs_roc))
+
+with(train_all_roc, roc.test(les_roc, mimosa_roc))
+with(train_all_roc, roc.test(prl_roc, aprl_roc))
+with(train_all_roc, roc.test(cvs_roc, acvs_roc))
+
+test_all_roc[c(2, 8, 4, 10, 6, 12)]
+
+get_spec_at_sens <- function(roc_obj, sensitivity) {
+  last_index <- sum(roc_obj$sensitivities > sensitivity)
+  return(roc_obj$specificities[last_index])
+}
+
+get_spec_at_sens(test_all_roc$prl_roc, 0.8)
+get_spec_at_sens(test_all_roc$aprl_roc, 0.8)
+
+aprl_filter <- roc(prl_true ~ aprl_pred, data = filter(test_all, mimosa_pred > 0.3)); plot(aprl_filter, print.auc = TRUE)
+roc.test(test_all_roc$prl_roc, aprl_filter)
+acvs_filter <- roc(cvs_true ~ acvs_pred, data = filter(test_all, mimosa_pred > 0.3)); plot(acvs_filter, print.auc = TRUE)
+roc.test(test_all_roc$cvs_roc, acvs_filter)
+```
+
+# ROC by site
+```{r}
+test_all_site <- test_all %>% mutate(site = as.numeric(str_sub(as.character(subject), 2, 2)))
+by_subject <- test_all_site %>% 
+  group_by(subject) %>% 
+  summarize(n_cand = n(),
+            n_lesion = sum(lesion_true, na.rm = T),
+            n_prl = sum(prl_true),
+            n_cvs = sum(cvs_true, na.rm = T)) 
+for (i in 1:10) {
+  if (i == 1) {
+    plot(roc(prl_true ~ prl_pred, data = test_all_site %>% filter(site == i)))
+  }
+  plot(roc(prl_true ~ prl_pred, data = test_all_site %>% filter(site == i)), add = TRUE, col = i)
+}
+plot(roc(prl_true ~ prl_pred, data = test_all_site), add = TRUE)
+```
+
+
+# Check PR curves
+```{r}
+pr_prl <- pr.curve(scores.class0 = test_all$prl_pred, weights.class0 = test_all$prl_true, curve = TRUE, rand.compute = TRUE)
+pr_aprl <- pr.curve(scores.class0 = test_all$aprl_pred, weights.class0 = test_all$prl_true, curve = TRUE, rand.compute = TRUE)
+
+pr_joined <- rbind(pr_prl$curve, pr_aprl$curve) %>% 
+  as.data.frame() %>% 
+  cbind(method = c(rep("prl", nrow(pr_prl$curve)),
+                   rep("aprl", nrow(pr_aprl$curve))))
+ggplot(pr_joined) + geom_point(aes(x = V1, y = V2, color = method))
+```
+
+
+# Get training thresholds
+```{r}
+# Get thresholds from comprehensive training set (Training set from all 10 CVs) 
+train_preds_all <- do.call(rbind, train_preds)
+all_roc <- get_train_roc(train_preds_all)
+
+les_thresh <- get_threshold(all_roc$les_roc)
+prl_thresh <- get_threshold(all_roc$prl_roc)
+cvs_thresh <- get_threshold(all_roc$cvs_roc)
+```
+
+```{r}
+ms_status <- read.csv(here("data/csvs/cavs_ms_status.csv")) %>% 
+  mutate(site = as.numeric(str_sub(subject, 2, 2)))
+demo <- read.csv(here("data/csvs/cavs_demographics.csv"))
+
+test_all_joined <- test_all %>% 
+  group_by(subject) %>% 
+  summarise(n_lesions = sum(lesion_pred > les_thresh[1]),
+            n_prls = sum(prl_pred > prl_thresh[1]), 
+            n_cvss = sum(cvs_pred > cvs_thresh[1]),
+            lesion_vars = sum(lesion_var),
+            prl_vars = sum(prl_var),
+            cvs_vars = sum(cvs_var)) %>% 
+  left_join(ms_status, by = "subject") %>% 
+  left_join(demo, by = "subject") %>% 
+  mutate(ms_diagnosis = ifelse(ms_diagnosis == "Yes", 1, 0))
+
+with(test_all_joined, cor.test(n_lesions, total_lesions, method = "spearman"))
+with(test_all_joined, cor.test(n_prls, total_prls, method = "spearman"))
+with(test_all_joined, cor.test(n_cvss, total_cvss, method = "spearman"))
+
+ggplot(test_all_joined) + 
+  geom_point(aes(n_lesions, total_lesions)) +
+  geom_abline(intercept = 0, slope = 1)
+ggplot(test_all_joined) + 
+  geom_point(aes(n_prls, total_prls)) +
+  geom_abline(intercept = 0, slope = 1)
+ggplot(test_all_joined) + 
+  geom_point(aes(n_cvss, total_cvss)) +
+  geom_abline(intercept = 0, slope = 1)
+
+mod_bl <- glm(ms_diagnosis ~ age_yrs_calc + sex_female, data = test_all_joined,
+              family = binomial())
+glm(ms_diagnosis ~ age_yrs_calc + sex_female + n_cvss + n_prls + n_lesions, 
+    data = test_all_joined, 
+    family = binomial()) %>% summary()
+```
+
+# Old clinical...
+```{r}
+analyze_against_demo <-  function(train_label, test_label) {
+  all_df <- rbind(train_label, test_label)
+  all_df <- all_df %>% 
+    group_by(subject) %>% 
+    summarise(n_lesions = sum(lesion_01),
+              n_prls = sum(prl_01), 
+              n_cvss = sum(cvs_01)) %>% 
+    left_join(ms_status, by = "subject") %>% 
+    left_join(demo, by = "subject") %>% 
+    mutate(ms_diagnosis = ifelse(ms_diagnosis == "Yes", 1, 0))
+  
+  mod_bl <- glm(ms_diagnosis ~ age_yrs_calc + sex_female, data = all_df,
+                family = binomial())
+  glm(ms_diagnosis ~ age_yrs_calc + sex_female + n_cvss + n_prls + n_lesions, 
+      data = all_df, 
+      family = binomial()) %>% summary()
+}
+
+train_demo <- mlapply(analyze_against_demo, train_labels, test_labels)
+```
+
+# Plot patch
+```{r}
+example_subject <- list.files(list.files(here("data/processed_05"), 
+                                         full.names = TRUE)[2], 
+                              full.names = TRUE)
+plot_patch <- function(path_list, corner) {
+  if (length(path_list) == 1)
+    path_list <- list(path_list)
+  lapply(path_list, function(path) {
+    image_array <- as.array(check_ants(path))
+    patch <- image_array[corner[1]:(corner[1] + 23), corner[2]:(corner[2] + 23), corner[3]]
+    image(patch, col = grey(seq(0, 1, length = 256)), axes = FALSE)
+    par(mar=c(0,0,0,0))
+    patch <- image_array[corner[1], corner[2]:(corner[2] + 23), corner[3]:(corner[3] + 23)]
+    image(patch, col = grey(seq(0, 1, length = 256)), axes = FALSE)
+    par(mar=c(0,0,0,0))
+    patch <- image_array[corner[1]:(corner[1] + 23), corner[2], corner[3]:(corner[3] + 23)]
+    image(patch, col = grey(seq(0, 1, length = 256)), axes = FALSE)
+    par(mar=c(0,0,0,0))
+  })
+}
+
+plot_patch(example_subject[c(18, 8, 6, 12, 17, 15)], c(65, 112, 230))
+```
+
