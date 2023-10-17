@@ -1,0 +1,37 @@
+import torch
+import torch.nn as nn
+
+class Predictor3D(nn.Module):
+    def __init__(self):
+        super(Predictor3D, self).__init__()
+        
+        self.predictor = nn.Sequential(
+            nn.MaxPool3d(kernel_size=3, stride=1),
+            nn.Flatten(),
+            nn.Linear(2048, 1024),
+            nn.Dropout(0.2),
+            nn.ReLU(),
+            nn.Linear(1024, 512),
+            nn.Dropout(0.2),
+            nn.ReLU()
+        )
+        
+        self.lesion_predictor = nn.Sequential(
+            nn.Linear(512, 1)
+        )
+        
+        self.subtype_predictor = nn.Sequential(
+            nn.Linear(513, 2)
+        )
+
+        self.sigmoid_fn = nn.Sequential(
+            nn.Sigmoid()
+        )
+        
+    def forward(self, x):
+        compressed = self.predictor(x)
+        lesion_pred = self.lesion_predictor(compressed)
+        subtype_pred = self.subtype_predictor(torch.cat([compressed, lesion_pred], dim = 1))
+        output = self.sigmoid_fn(torch.cat([lesion_pred, subtype_pred], dim = 1))
+        
+        return output

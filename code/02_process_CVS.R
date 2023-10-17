@@ -52,6 +52,7 @@ label_seg_nifti <- function(excel_list, index,
                             seg_1_dir, seg_2_dir, flair_dir, combined_dir) {
   print(index)
   subject_id <- names(excel_list)[index]
+  subject_id <- str_split_fixed(subject_id, " ", 2)[1]
   dir.create(file.path(combined_dir, subject_id), 
              showWarnings = FALSE, recursive = TRUE)
   coord_df <- excel_list[[index]]
@@ -105,7 +106,7 @@ label_seg_nifti <- function(excel_list, index,
       coord <- c(coord_df$x_coord[i], coord_df$y_coord[i], coord_df$z_coord[i])
       if (any(coord > dim(flair) + 1) | any(coord < c(1, 1, 1))) next # If too close to either edge, skip (or data entry error)
       cluster_label <- as.numeric(cvs_image_lab[coord[1], coord[2], coord[3]])
-      if (cluster_label == 0) { # if the point is not currently labeled, make a 5x5x5 box with the ID
+      if (cluster_label == 0) { # if the point is not currently labeled, make a 3x3x3 box with the ID
         cvs_image[(coord[1] - 1):(coord[1] + 1), 
                   (coord[2] - 1):(coord[2] + 1), 
                   (coord[3] - 1):(coord[3] + 1)] <- coord_df$cvs_id[i]
@@ -161,15 +162,14 @@ remaining_list <- lapply(1:length(excel_sheets(remaining_path)),
 
 key_id_pair <- left_join(
   data.frame(random_id = randomized_sheets[6:length(randomized_sheets)]), key)
-remaining_id <- remaining_sheets %>% str_replace(" Pre", "")
 
-names(randomized_list) <- key_id_pair[, 2] %>% str_trim()
-names(remaining_list) <- remaining_id %>% str_trim()
+names(randomized_list) <- paste(key_id_pair[, 2], key_id_pair[, 3]) %>% str_trim()
+names(remaining_list) <- remaining_sheets %>% str_trim()
 
-randomized_list <- combine_dataframes(randomized_list)
-remaining_list <- combine_dataframes(remaining_list)
+post_randomized_list <- combine_dataframes(randomized_list[grepl("Post", names(randomized_list))])
+post_remaining_list <- combine_dataframes(remaining_list[!grepl("Pre", names(remaining_list))])
 
-all_list <- append(randomized_list, remaining_list)
+all_list <- append(post_randomized_list, post_remaining_list)
 
 ###
 seg_1_dir <- "/home/fengling/Documents/prl/data/CVS_lynn"

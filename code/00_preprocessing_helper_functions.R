@@ -21,7 +21,6 @@ annotate_lesion_mask <- function(labeled_mask, cvs_exists,
                                  prl_coords, cvs_coords = NULL, contains_lesions) {
   lesion_type <- antsImageClone(labeled_mask)
   n_lesions <- max(unique(labeled_mask))
-  browser()
   if (n_lesions > 0) {
     for (i in 1:n_lesions) {
       print(i)
